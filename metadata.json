@@ -1,0 +1,6 @@
+{
+  "name": "PaperFetch",
+  "description": "Scan CSV and RIS reference files for DOIs, resolve free legal open-access research PDFs, and track downloads with real-time status and dashboards.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
