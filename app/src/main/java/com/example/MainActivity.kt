@@ -227,14 +227,14 @@ fun PaperFetchApp(viewModel: PaperViewModel) {
                     }
                 },
                 actions = {
-                    // Elevator Music Sound Toggle
+                    // Jeopardy Theme Sound Toggle
                     IconButton(
                         onClick = { viewModel.toggleSoundMuted() },
                         modifier = Modifier.testTag("action_sound_toggle")
                     ) {
                         Icon(
                             imageVector = if (isMuted) Icons.Default.VolumeOff else Icons.Default.MusicNote,
-                            contentDescription = if (isMuted) "Unmute Elevator Music" else "Mute Elevator Music",
+                            contentDescription = if (isMuted) "Unmute Jeopardy Theme" else "Mute Jeopardy Theme",
                             tint = if (isMuted) MaterialTheme.colorScheme.onSurfaceVariant else TealAccentDark
                         )
                     }

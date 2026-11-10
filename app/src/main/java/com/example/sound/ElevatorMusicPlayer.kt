@@ -12,9 +12,11 @@ import kotlin.math.exp
 import kotlin.math.sin
 
 /**
- * Procedural Elevator Music & Arrival Ding Synthesizer.
- * Generates an authentic, gentle, looping lounge/bossa-nova chord progression
- * using soft electric-piano and walking-bass tones, and a crystal-clear elevator bell chime.
+ * Procedural Synthesizer for the iconic Jeopardy "Think Music" theme
+ * and completion arrival chime bell ("Ding!").
+ *
+ * Synthesizes the memorable melody with bright mallet/marimba harmonics,
+ * bouncy staccato bass, and the classic countdown clock ticking.
  */
 class ElevatorMusicPlayer {
 
@@ -33,7 +35,7 @@ class ElevatorMusicPlayer {
     fun isMuted(): Boolean = isMuted
 
     /**
-     * Start playing the looping elevator music.
+     * Start playing the looping Jeopardy theme song.
      */
     fun startMusic(scope: CoroutineScope) {
         if (isMuted || isPlayingMusic) return
@@ -68,9 +70,8 @@ class ElevatorMusicPlayer {
             try {
                 audioTrack.play()
 
-                // Generate a delightful 4-measure smooth elevator music lounge loop:
-                // Chord progression: Fmaj7 -> Dm7 -> Gm7 -> C7
-                val loopSamples = generateElevatorLoop()
+                // Generate the iconic 8-measure Jeopardy Think Theme loop
+                val loopSamples = generateJeopardyLoop()
 
                 while (isActive && isPlayingMusic) {
                     var written = 0
@@ -98,7 +99,7 @@ class ElevatorMusicPlayer {
     }
 
     /**
-     * Stop the elevator music cleanly.
+     * Stop the theme music cleanly.
      */
     fun stopMusic() {
         isPlayingMusic = false
@@ -107,7 +108,7 @@ class ElevatorMusicPlayer {
     }
 
     /**
-     * Play the signature two-tone elevator arrival chime ("Ding-Dong!").
+     * Play the signature bright arrival chime ("Ding!").
      */
     fun playElevatorDing(scope: CoroutineScope) {
         if (isMuted) return
@@ -141,7 +142,6 @@ class ElevatorMusicPlayer {
                 audioTrack.play()
                 val dingSamples = generateDingChime()
                 audioTrack.write(dingSamples, 0, dingSamples.size)
-                // Wait briefly for buffer to flush
                 Thread.sleep(1200)
             } catch (_: Exception) {
             } finally {
@@ -155,105 +155,166 @@ class ElevatorMusicPlayer {
     }
 
     /**
-     * Synthesize 4 bars of classic elevator music (approx. 7.5 seconds at 128 bpm).
-     * Soft Rhodes electric piano chords + gentle walking upright bass + vibraphone melody line.
+     * Synthesize the iconic Jeopardy "Think Music" (8 bars, ~15.5 seconds at 124 BPM).
+     * Features:
+     * - Iconic bouncy melody (bright marimba / mallet synthesizer)
+     * - Pizzicato / staccato walking bass line
+     * - Studio clock countdown ticking on each beat
      */
-    private fun generateElevatorLoop(): ShortArray {
-        val bpm = 120
-        val beatDuration = 60.0 / bpm // 0.5 sec per beat
-        val totalBeats = 16 // 4 bars of 4/4
+    private fun generateJeopardyLoop(): ShortArray {
+        val bpm = 124
+        val beatDuration = 60.0 / bpm // ~0.484 sec
+        val totalBeats = 32.0 // 8 measures of 4/4
         val totalSeconds = totalBeats * beatDuration
         val totalSamples = (totalSeconds * sampleRate).toInt()
         val buffer = FloatArray(totalSamples)
 
-        // Fmaj7, Dm7, Gm7, C9 chords (frequencies in Hz)
-        val chords = listOf(
-            // Fmaj7 (F3, A3, C4, E4)
-            listOf(174.61, 220.00, 261.63, 329.63),
-            // Dm7 (D3, F3, A3, C4)
-            listOf(146.83, 174.61, 220.00, 261.63),
-            // Gm7 (G3, Bb3, D4, F4)
-            listOf(196.00, 233.08, 293.66, 349.23),
-            // C9 / C7 (C3, E3, G3, Bb3, D4)
-            listOf(130.81, 164.81, 196.00, 233.08, 293.66)
+        // Note frequencies (Hz)
+        val C4 = 261.63
+        val D4 = 293.66
+        val E4 = 329.63
+        val F4 = 349.23
+        val G4 = 392.00
+        val A4 = 440.00
+        val B4 = 493.88
+
+        val C5 = 523.25
+        val D5 = 587.33
+        val E5 = 659.25
+        val F5 = 698.46
+        val G5 = 783.99
+        val A5 = 880.00
+
+        // Bass frequencies
+        val C3 = 130.81
+        val D3 = 146.83
+        val E3 = 164.81
+        val F3 = 174.61
+        val G3 = 196.00
+        val A3 = 220.00
+        val Bb3 = 233.08
+        val B3 = 246.94
+
+        // 1. MELODY NOTES: (startBeat, durationBeats, frequency)
+        val melody = listOf(
+            // --- Phrase 1 ---
+            // Bar 1: Da-da-da-da
+            Triple(0.0, 0.85, C5),
+            Triple(1.0, 0.85, F5),
+            Triple(2.0, 0.85, C5),
+            Triple(3.0, 0.85, F4),
+            // Bar 2: Da-da-da
+            Triple(4.0, 0.85, C5),
+            Triple(5.0, 0.85, F5),
+            Triple(6.0, 1.7, C5),
+            // Bar 3: Da-da-da-da
+            Triple(8.0, 0.85, C5),
+            Triple(9.0, 0.85, F5),
+            Triple(10.0, 0.85, C5),
+            Triple(11.0, 0.85, F5),
+            // Bar 4: Da-da-da-da-da
+            Triple(12.0, 1.1, A5),
+            Triple(13.2, 0.65, G5),
+            Triple(14.0, 0.65, F5),
+            Triple(14.7, 0.55, E5),
+            Triple(15.25, 0.65, D5),
+
+            // --- Phrase 2 ---
+            // Bar 5: Da-da-da-da
+            Triple(16.0, 0.85, C5),
+            Triple(17.0, 0.85, F5),
+            Triple(18.0, 0.85, C5),
+            Triple(19.0, 0.85, F4),
+            // Bar 6: Da-da-da
+            Triple(20.0, 0.85, C5),
+            Triple(21.0, 0.85, F5),
+            Triple(22.0, 1.7, C5),
+            // Bar 7: Descending turnaround
+            Triple(24.0, 0.85, F5),
+            Triple(25.0, 0.85, D5),
+            Triple(26.0, 0.85, B4),
+            Triple(27.0, 0.85, G4),
+            // Bar 8: Final cadence
+            Triple(28.0, 0.85, E4),
+            Triple(29.0, 0.85, D4),
+            Triple(30.0, 1.8, C4)
         )
 
-        // Bass root notes
-        val bassNotes = listOf(87.31, 73.42, 98.00, 65.41) // F2, D2, G2, C2
+        // Synthesize Melody (Bright Mallet / Marimba tone with overtone sparkle)
+        for ((startBeat, durBeats, freq) in melody) {
+            val startSample = (startBeat * beatDuration * sampleRate).toInt()
+            val noteDurationSec = durBeats * beatDuration
+            val noteSamples = (noteDurationSec * sampleRate).toInt()
 
-        // Soft melody notes (vibraphone / rhodes arpeggios)
-        val melodyNotes = listOf(
-            // Bar 1 (Fmaj7): A4, C5, E5, C5
-            listOf(440.0, 523.25, 659.25, 523.25),
-            // Bar 2 (Dm7): F5, E5, C5, A4
-            listOf(698.46, 659.25, 523.25, 440.0),
-            // Bar 3 (Gm7): D5, F5, A5, F5
-            listOf(587.33, 698.46, 880.0, 698.46),
-            // Bar 4 (C9): G5, E5, D5, C5
-            listOf(783.99, 659.25, 587.33, 523.25)
+            for (s in 0 until noteSamples) {
+                val idx = startSample + s
+                if (idx >= totalSamples) break
+                val t = s.toDouble() / sampleRate
+                // Crisp mallet attack with smooth natural decay
+                val env = (1.0 - exp(-t * 120.0)) * exp(-t * 3.8)
+                // Marimba / synth overtone formula (fundamental + octave + 2.76x ring)
+                val sample = (
+                    sin(2.0 * Math.PI * freq * t) * 0.70 +
+                    sin(2.0 * Math.PI * (freq * 2.0) * t) * 0.22 +
+                    sin(2.0 * Math.PI * (freq * 2.76) * t) * 0.12 +
+                    sin(2.0 * Math.PI * (freq * 4.0) * t) * 0.06
+                ) * env * 0.32
+                buffer[idx] += sample.toFloat()
+            }
+        }
+
+        // 2. BASS LINE: Walking bouncy pizzicato bass on beats
+        val bassNotes = listOf(
+            // Bar 1
+            F3, A3, C4, A3,
+            // Bar 2
+            F3, A3, C4, A3,
+            // Bar 3
+            F3, A3, C4, F3,
+            // Bar 4
+            Bb3, G3, C4, E3,
+            // Bar 5
+            F3, A3, C4, A3,
+            // Bar 6
+            F3, A3, C4, A3,
+            // Bar 7
+            D3, F3, G3, B3,
+            // Bar 8
+            C3, E3, G3, C4
         )
 
-        val barSamples = (4 * beatDuration * sampleRate).toInt()
+        for (beat in bassNotes.indices) {
+            val startSample = (beat * beatDuration * sampleRate).toInt()
+            val bassDurationSec = 0.7 * beatDuration
+            val noteSamples = (bassDurationSec * sampleRate).toInt()
+            val freq = bassNotes[beat]
 
-        for (bar in 0 until 4) {
-            val barStart = bar * barSamples
-            val chord = chords[bar]
-            val bass = bassNotes[bar]
-            val melody = melodyNotes[bar]
-
-            // 1. Play soft warm electric piano chord (with gentle tremolo & slow decay)
-            for (chordNote in chord) {
-                val noteDuration = 3.6 * beatDuration
-                val noteSamples = (noteDuration * sampleRate).toInt()
-                for (s in 0 until noteSamples) {
-                    val idx = barStart + s
-                    if (idx >= totalSamples) break
-                    val t = s.toDouble() / sampleRate
-                    // Envelope: soft attack, slow decay
-                    val env = (1.0 - exp(-t * 20.0)) * exp(-t * 0.9)
-                    // Rhodes sound: sine + subtle 2nd harmonic + gentle 5Hz chorus tremolo
-                    val tremolo = 1.0 + 0.15 * sin(2.0 * Math.PI * 5.0 * t)
-                    val sample = (sin(2.0 * Math.PI * chordNote * t) * 0.7 +
-                            sin(2.0 * Math.PI * (chordNote * 2.0) * t) * 0.2) * env * tremolo * 0.14
-                    buffer[idx] += sample.toFloat()
-                }
+            for (s in 0 until noteSamples) {
+                val idx = startSample + s
+                if (idx >= totalSamples) break
+                val t = s.toDouble() / sampleRate
+                // Plucked bass envelope (fast attack, snappy exponential release)
+                val env = (1.0 - exp(-t * 80.0)) * exp(-t * 5.0)
+                val sample = (
+                    sin(2.0 * Math.PI * freq * t) * 0.75 +
+                    sin(2.0 * Math.PI * (freq * 2.0) * t) * 0.30
+                ) * env * 0.22
+                buffer[idx] += sample.toFloat()
             }
+        }
 
-            // 2. Walking warm bass notes on beat 1 and beat 3
-            for (beat in listOf(0, 2)) {
-                val bassStart = barStart + (beat * beatDuration * sampleRate).toInt()
-                val bassFreq = if (beat == 0) bass else bass * 1.5 // fifth on beat 3
-                val bassDuration = 1.6 * beatDuration
-                val bassSamples = (bassDuration * sampleRate).toInt()
-                for (s in 0 until bassSamples) {
-                    val idx = bassStart + s
-                    if (idx >= totalSamples) break
-                    val t = s.toDouble() / sampleRate
-                    val env = (1.0 - exp(-t * 40.0)) * exp(-t * 2.2)
-                    val sample = (sin(2.0 * Math.PI * bassFreq * t) * 0.8 +
-                            sin(2.0 * Math.PI * (bassFreq * 2.0) * t) * 0.3) * env * 0.22
-                    buffer[idx] += sample.toFloat()
-                }
-            }
+        // 3. COUNTDOWN CLOCK TICKING: Subtle woodblock / timer tick on each beat
+        for (beat in 0 until 32) {
+            val startSample = (beat * beatDuration * sampleRate).toInt()
+            val tickSamples = (0.025 * sampleRate).toInt() // 25ms click
 
-            // 3. Gentle vibraphone melody notes on each beat
-            for (beat in 0 until 4) {
-                val melStart = barStart + (beat * beatDuration * sampleRate).toInt()
-                val melFreq = melody[beat]
-                val melDuration = 0.9 * beatDuration
-                val melSamples = (melDuration * sampleRate).toInt()
-                for (s in 0 until melSamples) {
-                    val idx = melStart + s
-                    if (idx >= totalSamples) break
-                    val t = s.toDouble() / sampleRate
-                    // Bell/vibraphone envelope: fast crisp attack, exponential decay
-                    val env = (1.0 - exp(-t * 80.0)) * exp(-t * 3.5)
-                    // Vibraphone overtone structure
-                    val sample = (sin(2.0 * Math.PI * melFreq * t) * 0.75 +
-                            sin(2.0 * Math.PI * (melFreq * 3.0) * t) * 0.18 +
-                            sin(2.0 * Math.PI * (melFreq * 2.0) * t) * 0.1) * env * 0.16
-                    buffer[idx] += sample.toFloat()
-                }
+            for (s in 0 until tickSamples) {
+                val idx = startSample + s
+                if (idx >= totalSamples) break
+                val t = s.toDouble() / sampleRate
+                val clickEnv = exp(-t * 180.0)
+                val click = sin(2.0 * Math.PI * 1800.0 * t) * clickEnv * 0.08
+                buffer[idx] += click.toFloat()
             }
         }
 
@@ -267,8 +328,8 @@ class ElevatorMusicPlayer {
     }
 
     /**
-     * Synthesize authentic elevator arrival chime ("Ding-Dong!").
-     * Clean, bright, resonant brass chime bell.
+     * Synthesize authentic arrival chime ("Ding!").
+     * Clean, bright, resonant bell chime.
      */
     private fun generateDingChime(): ShortArray {
         val duration = 1.6 // seconds
@@ -290,12 +351,12 @@ class ElevatorMusicPlayer {
                 val idx = startSample + s
                 if (idx >= totalSamples) break
                 val t = s.toDouble() / sampleRate
-                // Crisp chime envelope: instantaneous attack, smooth bell decay
                 val env = exp(-t * 2.8)
-                // Bell harmonics
-                val sample = (sin(2.0 * Math.PI * freq * t) * 0.65 +
-                        sin(2.0 * Math.PI * (freq * 2.75) * t) * 0.22 +
-                        sin(2.0 * Math.PI * (freq * 4.07) * t) * 0.12) * env * 0.45
+                val sample = (
+                    sin(2.0 * Math.PI * freq * t) * 0.65 +
+                    sin(2.0 * Math.PI * (freq * 2.75) * t) * 0.22 +
+                    sin(2.0 * Math.PI * (freq * 4.07) * t) * 0.12
+                ) * env * 0.45
                 buffer[idx] += sample.toFloat()
             }
         }

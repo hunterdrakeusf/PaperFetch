@@ -224,12 +224,12 @@ fun ScanProgressBar(
                         if (progressState.isScanning) {
                             Icon(
                                 imageVector = if (isMuted) Icons.Default.VolumeOff else Icons.Default.MusicNote,
-                                contentDescription = if (isMuted) "Elevator music muted" else "Elevator music playing",
+                                contentDescription = if (isMuted) "Jeopardy music muted" else "Jeopardy music playing",
                                 tint = if (isMuted) Color.LightGray else TealAccent,
                                 modifier = Modifier.size(14.dp)
                             )
                             Text(
-                                text = if (isMuted) "Music Muted" else "Elevator Music",
+                                text = if (isMuted) "Theme Muted" else "Jeopardy Theme",
                                 style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp),
                                 color = if (isMuted) Color.LightGray else TealAccent
                             )

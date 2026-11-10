@@ -53,7 +53,7 @@ class PaperRepository(
         val newVal = !_isSoundMuted.value
         _isSoundMuted.value = newVal
         elevatorSound.setMuted(newVal)
-        addLog(LogLevel.INFO, if (newVal) "Elevator music muted" else "Elevator music enabled")
+        addLog(LogLevel.INFO, if (newVal) "Jeopardy theme muted" else "Jeopardy theme enabled")
     }
 
     private fun getDefaultDownloadDir(): File {

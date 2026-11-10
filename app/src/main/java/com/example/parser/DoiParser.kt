@@ -2,29 +2,126 @@ package com.example.parser
 
 import com.example.model.PaperRecord
 
+/**
+ * Regex-based parser for extracting unique Digital Object Identifiers (DOIs)
+ * from imported CSV, RIS, and plain text files.
+ */
 object DoiParser {
 
-    private val DOI_REGEX = Regex("""10\.\d{4,9}/[-._;()/:A-Za-z0-9]+""", RegexOption.IGNORE_CASE)
-
-    data class ParsedEntry(
-        val doi: String,
-        val title: String = "",
-        val authors: String = "",
-        val journal: String = "",
-        val year: Int? = null
+    /**
+     * Regex pattern matching DOIs according to the International DOI Foundation standard.
+     * Matches standard DOIs (10.XXXX/...) optionally prefixed with http(s)://doi.org/, dx.doi.org/, or doi:
+     */
+    private val DOI_PATTERN = Regex(
+        """(?:https?://(?:dx\.)?doi\.org/|doi:\s*)?(10\.\d{4,9}/[^\s"<>]+)""",
+        RegexOption.IGNORE_CASE
     )
 
-    fun normalizeDoi(raw: String): String? {
-        val trimmed = raw.trim()
-        val match = DOI_REGEX.find(trimmed) ?: return null
-        var doi = match.value
-        // Clean trailing punctuation
-        doi = doi.trimEnd('.', ',', ';', ':', ')', ']', '}')
-        return doi.lowercase()
+    /**
+     * Strict validation pattern for cleaned DOIs.
+     */
+    private val DOI_VALIDATION_REGEX = Regex(
+        """^10\.\d{4,9}/[-._;()/:A-Za-z0-9]+$""",
+        RegexOption.IGNORE_CASE
+    )
+
+    /**
+     * RIS tag line pattern: 2 alphanumeric characters, dash, and value.
+     */
+    private val RIS_LINE_REGEX = Regex(
+        """^([A-Z0-9]{2})\s*-\s*(.*)$""",
+        RegexOption.IGNORE_CASE
+    )
+
+    /**
+     * Validates if a string is a properly formatted DOI.
+     */
+    fun isValidDoi(doi: String): Boolean {
+        return DOI_VALIDATION_REGEX.matches(doi.trim())
     }
 
+    /**
+     * Cleans and normalizes a candidate DOI string:
+     * - Decodes URL-encoded characters (%2F -> /)
+     * - Strips URL prefixes (https://doi.org/, http://dx.doi.org/, etc.) and 'doi:'
+     * - Trims trailing sentence punctuation and closing brackets if unbalanced
+     * - Converts to lowercase for consistent deduplication
+     */
+    fun normalizeDoi(raw: String): String? {
+        var trimmed = raw.trim()
+        if (trimmed.isEmpty()) return null
+
+        if (trimmed.contains("%2F", ignoreCase = true)) {
+            trimmed = trimmed.replace("%2F", "/", ignoreCase = true).replace("%2f", "/", ignoreCase = true)
+        }
+
+        val match = DOI_PATTERN.find(trimmed) ?: return null
+        val candidate = match.groupValues.getOrNull(1) ?: match.value
+        val cleaned = cleanDoiSuffix(candidate)
+
+        return if (isValidDoi(cleaned)) cleaned else null
+    }
+
+    /**
+     * Extracts all unique DOIs from any raw text, CSV, or RIS content using regex.
+     * Preserves order of first appearance and removes any duplicates.
+     */
+    fun extractUniqueDois(text: String): List<String> {
+        if (text.isBlank()) return emptyList()
+
+        val decodedText = if (text.contains("%2F", ignoreCase = true)) {
+            text.replace("%2F", "/", ignoreCase = true).replace("%2f", "/", ignoreCase = true)
+        } else text
+
+        val uniqueDois = LinkedHashSet<String>()
+        val matches = DOI_PATTERN.findAll(decodedText)
+
+        for (match in matches) {
+            val candidate = match.groupValues.getOrNull(1) ?: match.value
+            val cleaned = cleanDoiSuffix(candidate)
+            if (isValidDoi(cleaned)) {
+                uniqueDois.add(cleaned)
+            }
+        }
+
+        return uniqueDois.toList()
+    }
+
+    /**
+     * Scans an imported RIS file and extracts all unique DOIs.
+     */
+    fun extractUniqueDoisFromRis(content: String): List<String> {
+        val records = parseRis(content, sourceFileName = "", batchId = "")
+        val fromRecords = records.map { it.doi }
+        val fromText = extractUniqueDois(content)
+
+        val uniqueSet = LinkedHashSet<String>()
+        uniqueSet.addAll(fromRecords)
+        uniqueSet.addAll(fromText)
+        return uniqueSet.toList()
+    }
+
+    /**
+     * Scans an imported CSV file and extracts all unique DOIs.
+     */
+    fun extractUniqueDoisFromCsv(content: String): List<String> {
+        val records = parseCsv(content, sourceFileName = "", batchId = "")
+        val fromRecords = records.map { it.doi }
+        val fromText = extractUniqueDois(content)
+
+        val uniqueSet = LinkedHashSet<String>()
+        uniqueSet.addAll(fromRecords)
+        uniqueSet.addAll(fromText)
+        return uniqueSet.toList()
+    }
+
+    /**
+     * Parses an RIS file into structured PaperRecord objects, extracting DOIs and bibliographic metadata
+     * (Title, Authors, Journal, Year). Ensures all unique DOIs are included without duplicates.
+     */
     fun parseRis(content: String, sourceFileName: String, batchId: String): List<PaperRecord> {
         val records = mutableListOf<PaperRecord>()
+        val seenDois = mutableSetOf<String>()
         val lines = content.lines()
 
         var currentDoi: String? = null
@@ -35,7 +132,7 @@ object DoiParser {
 
         fun commitRecord() {
             val doi = currentDoi?.let { normalizeDoi(it) }
-            if (!doi.isNullOrBlank()) {
+            if (!doi.isNullOrBlank() && seenDois.add(doi)) {
                 records.add(
                     PaperRecord(
                         doi = doi,
@@ -55,19 +152,17 @@ object DoiParser {
             currentYear = null
         }
 
-        val risLineRegex = Regex("""^([A-Z0-9]{2})\s*-\s*(.*)$""", RegexOption.IGNORE_CASE)
-
         for (line in lines) {
             val trimmed = line.trim()
             if (trimmed.isEmpty()) continue
 
-            val match = risLineRegex.find(trimmed)
+            val match = RIS_LINE_REGEX.find(trimmed)
             if (match != null) {
                 val tag = match.groupValues[1].uppercase()
                 val value = match.groupValues[2].trim()
 
                 when (tag) {
-                    "DO", "M3" -> {
+                    "DO", "M3", "L3" -> {
                         val foundDoi = normalizeDoi(value)
                         if (foundDoi != null) currentDoi = foundDoi
                     }
@@ -93,6 +188,13 @@ object DoiParser {
                     "ER" -> {
                         commitRecord()
                     }
+                    else -> {
+                        // Scan other fields (e.g. notes N1, abstract AB) if DOI not yet set for this entry
+                        if (currentDoi == null) {
+                            val foundDoi = normalizeDoi(value)
+                            if (foundDoi != null) currentDoi = foundDoi
+                        }
+                    }
                 }
             } else {
                 // If there's an embedded DOI on unformatted lines
@@ -105,15 +207,27 @@ object DoiParser {
 
         commitRecord() // In case file didn't end with ER
 
-        // Fallback: If no structured DOIs were captured via tags, regex scan the entire content
-        if (records.isEmpty()) {
-            return extractDoisFromRawText(content, sourceFileName, batchId)
+        // Ensure any remaining DOIs found via regex across the file are included as unique records
+        val allFileDois = extractUniqueDois(content)
+        for (doi in allFileDois) {
+            if (seenDois.add(doi)) {
+                records.add(
+                    PaperRecord(
+                        doi = doi,
+                        sourceFileName = sourceFileName,
+                        batchId = batchId
+                    )
+                )
+            }
         }
 
-        // Deduplicate by DOI
-        return records.distinctBy { it.doi }
+        return records
     }
 
+    /**
+     * Parses a CSV or TSV file into PaperRecord objects, extracting DOIs and bibliographic metadata.
+     * Identifies DOI columns, scans cells with regex, and guarantees all unique DOIs are extracted.
+     */
     fun parseCsv(content: String, sourceFileName: String, batchId: String): List<PaperRecord> {
         val lines = content.lines().filter { it.isNotBlank() }
         if (lines.isEmpty()) return emptyList()
@@ -157,6 +271,7 @@ object DoiParser {
         }
 
         val records = mutableListOf<PaperRecord>()
+        val seenDois = mutableSetOf<String>()
         val startRowIndex = if (doiColIndex != -1) 1 else 0
 
         for (i in startRowIndex until rows.size) {
@@ -184,7 +299,7 @@ object DoiParser {
                 }
             }
 
-            if (doi != null) {
+            if (doi != null && seenDois.add(doi)) {
                 if (titleColIndex != -1 && titleColIndex < row.size) {
                     title = row[titleColIndex].trim().replace("\"", "")
                 }
@@ -213,34 +328,79 @@ object DoiParser {
             }
         }
 
-        // If structured CSV parsing found nothing, fallback to raw text regex
-        if (records.isEmpty()) {
-            return extractDoisFromRawText(content, sourceFileName, batchId)
-        }
-
-        return records.distinctBy { it.doi }
-    }
-
-    fun extractDoisFromRawText(content: String, sourceFileName: String, batchId: String): List<PaperRecord> {
-        val matches = DOI_REGEX.findAll(content)
-        val list = mutableListOf<PaperRecord>()
-        val seen = mutableSetOf<String>()
-
-        for (match in matches) {
-            val clean = normalizeDoi(match.value)
-            if (clean != null && seen.add(clean)) {
-                list.add(
+        // Catch any remaining unique DOIs found anywhere in the CSV text via regex
+        val allFileDois = extractUniqueDois(content)
+        for (doi in allFileDois) {
+            if (seenDois.add(doi)) {
+                records.add(
                     PaperRecord(
-                        doi = clean,
+                        doi = doi,
                         sourceFileName = sourceFileName,
                         batchId = batchId
                     )
                 )
             }
         }
-        return list
+
+        return records
     }
 
+    /**
+     * Extracts unique DOIs from raw text and wraps them in PaperRecord instances.
+     */
+    fun extractDoisFromRawText(content: String, sourceFileName: String, batchId: String): List<PaperRecord> {
+        val uniqueDois = extractUniqueDois(content)
+        return uniqueDois.map { doi ->
+            PaperRecord(
+                doi = doi,
+                sourceFileName = sourceFileName,
+                batchId = batchId
+            )
+        }
+    }
+
+    /**
+     * Internal helper to clean DOI suffixes, removing trailing punctuation and unbalanced parentheses.
+     */
+    private fun cleanDoiSuffix(rawDoi: String): String {
+        var doi = rawDoi.trim()
+
+        // Replace URL-encoded slash (%2F)
+        if (doi.contains("%2F", ignoreCase = true)) {
+            doi = doi.replace("%2F", "/", ignoreCase = true)
+        }
+
+        // Remove URL and prefix prefixes if still attached
+        doi = doi.replaceFirst(
+            Regex("""^(?:https?://(?:dx\.)?doi\.org/|doi:\s*)""", RegexOption.IGNORE_CASE),
+            ""
+        ).trim()
+
+        // Remove trailing punctuation marks: .,;:?!'\"<>[]{}
+        while (doi.isNotEmpty() && (doi.last() in ".,;:?!'\"<>[]{}")) {
+            doi = doi.dropLast(1)
+        }
+
+        // Handle trailing parenthesis: strip if unbalanced
+        while (doi.endsWith(")")) {
+            val openCount = doi.count { it == '(' }
+            val closeCount = doi.count { it == ')' }
+            if (closeCount > openCount) {
+                doi = doi.dropLast(1)
+                while (doi.isNotEmpty() && (doi.last() in ".,;:?!'\"<>[]{}")) {
+                    doi = doi.dropLast(1)
+                }
+            } else {
+                break
+            }
+        }
+
+        return doi.lowercase()
+    }
+
+    /**
+     * Robust CSV line splitter taking quoted fields into account.
+     */
     private fun parseCsvLine(line: String, delimiter: Char): List<String> {
         val result = mutableListOf<String>()
         val sb = StringBuilder()
