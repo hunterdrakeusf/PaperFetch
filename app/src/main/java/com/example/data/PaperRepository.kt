@@ -110,8 +110,31 @@ class PaperRepository(
         addLog(LogLevel.INFO, "Loaded ${papers.size} references from '$sourceName' (Batch: ${batchId.take(8)})")
 
         scope.launch {
-            // Save initial records to DB
-            paperDao.insertAllIgnore(papers.map { it.copy(batchId = batchId) })
+            // Save initial records to DB, preserving/updating bibliographic fields if re-imported
+            for (paper in papers) {
+                val existing = paperDao.getPaperByDoi(paper.doi)
+                if (existing == null) {
+                    paperDao.insertOrUpdate(paper.copy(batchId = batchId))
+                } else {
+                    paperDao.insertOrUpdate(
+                        existing.copy(
+                            title = paper.title.ifBlank { existing.title },
+                            authors = paper.authors.ifBlank { existing.authors },
+                            journal = paper.journal.ifBlank { existing.journal },
+                            year = paper.year ?: existing.year,
+                            volume = paper.volume.ifBlank { existing.volume },
+                            issue = paper.issue.ifBlank { existing.issue },
+                            pages = paper.pages.ifBlank { existing.pages },
+                            issn = paper.issn.ifBlank { existing.issn },
+                            publisher = paper.publisher.ifBlank { existing.publisher },
+                            url = paper.url.ifBlank { existing.url },
+                            abstractText = paper.abstractText.ifBlank { existing.abstractText },
+                            notes = paper.notes.ifBlank { existing.notes },
+                            batchId = batchId
+                        )
+                    )
+                }
+            }
 
             _scanProgress.value = ScanProgressState(
                 isScanning = true,
@@ -125,6 +148,15 @@ class PaperRepository(
             elevatorSound.startMusic(scope)
             executeScanLoop(papers)
         }
+    }
+
+    fun saveCsvToDesignatedFolder(csvContent: String, fileName: String): File {
+        val dir = _designatedFolder.value
+        if (!dir.exists()) dir.mkdirs()
+        val target = File(dir, fileName)
+        target.writeText(csvContent, Charsets.UTF_8)
+        addLog(LogLevel.SUCCESS, "Exported Rayyan CSV: ${target.name} (${target.length()} bytes)")
+        return target
     }
 
     private suspend fun executeScanLoop(papers: List<PaperRecord>) {
@@ -150,8 +182,24 @@ class PaperRepository(
                     currentItemProgress = 0.1f
                 )
 
-                // Update DB status to RESOLVING
+                // Update DB status to RESOLVING (unless already downloaded locally on this device)
                 val currentInDb = paperDao.getPaperByDoi(doi) ?: record
+                val existingLocalFile = currentInDb.localFilePath?.let { File(it) }
+                if (currentInDb.downloadStatus == "DOWNLOADED" &&
+                    existingLocalFile != null &&
+                    existingLocalFile.exists() &&
+                    existingLocalFile.length() > 0L
+                ) {
+                    addLog(LogLevel.SUCCESS, "Verified existing local PDF: ${existingLocalFile.name}", doi)
+                    completed++
+                    _scanProgress.value = _scanProgress.value.copy(
+                        completedCount = completed,
+                        currentItemProgress = 1.0f
+                    )
+                    delay(100)
+                    continue
+                }
+
                 paperDao.insertOrUpdate(
                     currentInDb.copy(
                         downloadStatus = "RESOLVING",
@@ -169,6 +217,13 @@ class PaperRepository(
                     val paperAuthors = if (resolved.authors.isNotBlank()) resolved.authors else currentInDb.authors
                     val paperJournal = if (resolved.journal.isNotBlank()) resolved.journal else currentInDb.journal
                     val paperYear = resolved.year ?: currentInDb.year
+                    val paperVolume = currentInDb.volume.ifBlank { resolved.volume }
+                    val paperIssue = currentInDb.issue.ifBlank { resolved.issue }
+                    val paperPages = currentInDb.pages.ifBlank { resolved.pages }
+                    val paperIssn = currentInDb.issn.ifBlank { resolved.issn }
+                    val paperPublisher = currentInDb.publisher.ifBlank { resolved.publisher }
+                    val paperUrl = currentInDb.url.ifBlank { resolved.landingPageUrl ?: "https://doi.org/$doi" }
+                    val paperAbstract = currentInDb.abstractText.ifBlank { resolved.abstractText }
 
                     if (resolved.isOa && !resolved.pdfUrl.isNullOrBlank()) {
                         addLog(
@@ -190,6 +245,13 @@ class PaperRepository(
                                 authors = paperAuthors,
                                 journal = paperJournal,
                                 year = paperYear,
+                                volume = paperVolume,
+                                issue = paperIssue,
+                                pages = paperPages,
+                                issn = paperIssn,
+                                publisher = paperPublisher,
+                                url = paperUrl,
+                                abstractText = paperAbstract,
                                 oaStatus = resolved.oaStatus,
                                 isOa = true,
                                 license = resolved.license,
@@ -221,6 +283,13 @@ class PaperRepository(
                                         authors = paperAuthors,
                                         journal = paperJournal,
                                         year = paperYear,
+                                        volume = paperVolume,
+                                        issue = paperIssue,
+                                        pages = paperPages,
+                                        issn = paperIssn,
+                                        publisher = paperPublisher,
+                                        url = paperUrl,
+                                        abstractText = paperAbstract,
                                         oaStatus = resolved.oaStatus,
                                         isOa = true,
                                         license = resolved.license,
@@ -245,6 +314,13 @@ class PaperRepository(
                                         authors = paperAuthors,
                                         journal = paperJournal,
                                         year = paperYear,
+                                        volume = paperVolume,
+                                        issue = paperIssue,
+                                        pages = paperPages,
+                                        issn = paperIssn,
+                                        publisher = paperPublisher,
+                                        url = paperUrl,
+                                        abstractText = paperAbstract,
                                         oaStatus = resolved.oaStatus,
                                         isOa = true,
                                         license = resolved.license,
@@ -268,6 +344,13 @@ class PaperRepository(
                                 authors = paperAuthors,
                                 journal = paperJournal,
                                 year = paperYear,
+                                volume = paperVolume,
+                                issue = paperIssue,
+                                pages = paperPages,
+                                issn = paperIssn,
+                                publisher = paperPublisher,
+                                url = paperUrl,
+                                abstractText = paperAbstract,
                                 oaStatus = "closed",
                                 isOa = false,
                                 license = null,

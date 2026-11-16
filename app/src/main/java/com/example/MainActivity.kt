@@ -93,8 +93,12 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
 import com.example.model.PaperRecord
+import com.example.service.ExportFormat
+import com.example.service.ExportScope
+import com.example.service.RayyanCsvExporter
 import com.example.ui.PaperViewModel
 import com.example.ui.components.DashboardCards
+import com.example.ui.components.ExportDialog
 import com.example.ui.components.FolderDialog
 import com.example.ui.components.ImportDialog
 import com.example.ui.components.PaperCard
@@ -133,6 +137,7 @@ fun PaperFetchApp(viewModel: PaperViewModel) {
     val coroutineScope = rememberCoroutineScope()
 
     val papers by viewModel.filteredPapers.collectAsState()
+    val allPapers by viewModel.allPapers.collectAsState()
     val stats by viewModel.dashboardStats.collectAsState()
     val progressState by viewModel.scanProgress.collectAsState()
     val logs by viewModel.scanLogs.collectAsState()
@@ -142,11 +147,14 @@ fun PaperFetchApp(viewModel: PaperViewModel) {
     val isMuted by viewModel.isSoundMuted.collectAsState()
     val selectedPaper by viewModel.selectedPaper.collectAsState()
     val showImportDialog by viewModel.showImportDialog.collectAsState()
+    val showExportDialog by viewModel.showExportDialog.collectAsState()
     val showLogSheet by viewModel.showLogSheet.collectAsState()
     val showFolderDialog by viewModel.showFolderDialog.collectAsState()
 
     var showClearConfirmDialog by remember { mutableStateOf(false) }
     var showMenu by remember { mutableStateOf(false) }
+    var pendingExportScope by remember { mutableStateOf(ExportScope.DOWNLOADED_ONLY) }
+    var pendingExportFormat by remember { mutableStateOf(ExportFormat.RAYYAN_ALL_FIELDS) }
 
     val detailSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val logSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -168,6 +176,25 @@ fun PaperFetchApp(viewModel: PaperViewModel) {
                 }
             } catch (e: Exception) {
                 Toast.makeText(context, "Error reading file: ${e.message}", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    // SAF CreateDocument launcher for exporting Rayyan-compatible .csv
+    val createCsvLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("text/csv")
+    ) { uri: Uri? ->
+        if (uri != null) {
+            try {
+                val csvContent = viewModel.generateRayyanCsv(pendingExportScope, pendingExportFormat)
+                context.contentResolver.openOutputStream(uri)?.use { stream ->
+                    stream.write(csvContent.toByteArray(Charsets.UTF_8))
+                }
+                viewModel.setShowExportDialog(false)
+                val savedName = getFileName(context, uri) ?: "exported_rayyan.csv"
+                Toast.makeText(context, "Exported CSV: $savedName", Toast.LENGTH_LONG).show()
+            } catch (e: Exception) {
+                Toast.makeText(context, "Failed to save CSV: ${e.message}", Toast.LENGTH_LONG).show()
             }
         }
     }
@@ -279,13 +306,14 @@ fun PaperFetchApp(viewModel: PaperViewModel) {
                             )
 
                             DropdownMenuItem(
-                                text = { Text("Export Manifest CSV") },
+                                text = { Text("Export Rayyan CSV") },
                                 leadingIcon = {
                                     Icon(imageVector = Icons.Default.Share, contentDescription = null)
                                 },
+                                modifier = Modifier.testTag("menu_export_csv"),
                                 onClick = {
                                     showMenu = false
-                                    exportManifest(context, viewModel.generateManifestCsv(papers))
+                                    viewModel.setShowExportDialog(true)
                                 }
                             )
 
@@ -332,7 +360,8 @@ fun PaperFetchApp(viewModel: PaperViewModel) {
                 DashboardCards(
                     stats = stats,
                     activeFilter = activeFilter,
-                    onFilterSelected = { viewModel.setFilter(it) }
+                    onFilterSelected = { viewModel.setFilter(it) },
+                    onExportClick = { viewModel.setShowExportDialog(true) }
                 )
             }
 
@@ -500,6 +529,38 @@ fun PaperFetchApp(viewModel: PaperViewModel) {
             },
             onImportText = { content, fileName ->
                 viewModel.importContent(content, fileName)
+            }
+        )
+    }
+
+    if (showExportDialog) {
+        ExportDialog(
+            allPapers = allPapers,
+            designatedFolderName = currentFolder.name,
+            onDismiss = { viewModel.setShowExportDialog(false) },
+            onSaveAsCsv = { scope, format ->
+                pendingExportScope = scope
+                pendingExportFormat = format
+                createCsvLauncher.launch(RayyanCsvExporter.defaultFileName(scope))
+            },
+            onSaveToDesignatedFolder = { scope, format ->
+                try {
+                    val savedFile = viewModel.saveCsvToDesignatedFolder(scope, format)
+                    viewModel.setShowExportDialog(false)
+                    Toast.makeText(
+                        context,
+                        "Saved CSV to ${savedFile.parentFile?.name}/${savedFile.name}",
+                        Toast.LENGTH_LONG
+                    ).show()
+                } catch (e: Exception) {
+                    Toast.makeText(context, "Export failed: ${e.message}", Toast.LENGTH_LONG).show()
+                }
+            },
+            onShareCsvFile = { scope, format ->
+                val csvContent = viewModel.generateRayyanCsv(scope, format)
+                val fileName = RayyanCsvExporter.defaultFileName(scope)
+                shareCsvFile(context, csvContent, fileName)
+                viewModel.setShowExportDialog(false)
             }
         )
     }
@@ -701,14 +762,22 @@ private fun openWebUrl(context: Context, url: String) {
     }
 }
 
-private fun exportManifest(context: Context, csvData: String) {
+private fun shareCsvFile(context: Context, csvData: String, fileName: String) {
     try {
+        val tempFile = RayyanCsvExporter.writeCsvToFile(csvData, File(context.cacheDir, fileName))
+        val uri: Uri = FileProvider.getUriForFile(
+            context,
+            "${context.packageName}.fileprovider",
+            tempFile
+        )
         val sendIntent = Intent(Intent.ACTION_SEND).apply {
-            type = "text/plain"
-            putExtra(Intent.EXTRA_SUBJECT, "PaperFetch Scan Report")
-            putExtra(Intent.EXTRA_TEXT, csvData)
+            type = "text/csv"
+            putExtra(Intent.EXTRA_STREAM, uri)
+            putExtra(Intent.EXTRA_SUBJECT, "PaperFetch Rayyan CSV Export ($fileName)")
+            putExtra(Intent.EXTRA_TEXT, "Rayyan-compatible CSV export of scanned references from PaperFetch.")
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
-        context.startActivity(Intent.createChooser(sendIntent, "Export DOI Scan Manifest"))
+        context.startActivity(Intent.createChooser(sendIntent, "Share Rayyan CSV"))
     } catch (e: Exception) {
         Toast.makeText(context, "Export error: ${e.message}", Toast.LENGTH_SHORT).show()
     }

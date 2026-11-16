@@ -95,15 +95,27 @@ fun PaperDetailSheet(
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            // Metadata block (Authors, Journal, Year)
+            // Metadata block (Authors, Journal, Citation Details, Year, Publisher, ISSN)
             if (paper.authors.isNotBlank()) {
                 DetailRow(label = "Authors", value = paper.authors)
             }
             if (paper.journal.isNotBlank()) {
                 DetailRow(label = "Journal / Venue", value = paper.journal)
             }
-            if (paper.year != null) {
-                DetailRow(label = "Publication Year", value = paper.year.toString())
+            val citationParts = buildList {
+                if (paper.year != null) add(paper.year.toString())
+                if (paper.volume.isNotBlank()) add("Vol. ${paper.volume}")
+                if (paper.issue.isNotBlank()) add("Issue ${paper.issue}")
+                if (paper.pages.isNotBlank()) add("pp. ${paper.pages}")
+            }
+            if (citationParts.isNotEmpty()) {
+                DetailRow(label = "Citation Details", value = citationParts.joinToString(" • "))
+            }
+            if (paper.publisher.isNotBlank()) {
+                DetailRow(label = "Publisher", value = paper.publisher)
+            }
+            if (paper.issn.isNotBlank()) {
+                DetailRow(label = "ISSN", value = paper.issn)
             }
 
             // DOI row with Copy
@@ -133,6 +145,18 @@ fun PaperDetailSheet(
             if (paper.downloadStatus == "DOWNLOADED" && paper.localFilePath != null) {
                 val mb = String.format("%.2f MB", paper.fileSizeBytes / (1024.0 * 1024.0))
                 DetailRow(label = "Saved Local File", value = "${paper.localFilePath} ($mb)")
+            }
+
+            if (paper.url.isNotBlank()) {
+                DetailRow(label = "Reference URL", value = paper.url)
+            }
+
+            if (paper.abstractText.isNotBlank()) {
+                DetailRow(label = "Abstract", value = paper.abstractText)
+            }
+
+            if (paper.notes.isNotBlank()) {
+                DetailRow(label = "Notes", value = paper.notes)
             }
 
             if (paper.sourceFileName.isNotBlank()) {

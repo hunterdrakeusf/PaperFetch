@@ -11,6 +11,9 @@ import com.example.model.PaperRecord
 import com.example.model.ScanLogEntry
 import com.example.model.ScanProgressState
 import com.example.parser.DoiParser
+import com.example.service.ExportFormat
+import com.example.service.ExportScope
+import com.example.service.RayyanCsvExporter
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -34,6 +37,9 @@ class PaperViewModel(application: Application) : AndroidViewModel(application) {
     val dashboardStats: StateFlow<DashboardStats> = repository.getDashboardStats()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), DashboardStats())
 
+    val allPapers: StateFlow<List<PaperRecord>> = repository.getAllPapers()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
     private val _filterStatus = MutableStateFlow("ALL") // ALL, DOWNLOADED, PAYWALLED, FAILED
     val filterStatus: StateFlow<String> = _filterStatus.asStateFlow()
 
@@ -46,6 +52,9 @@ class PaperViewModel(application: Application) : AndroidViewModel(application) {
     private val _showImportDialog = MutableStateFlow(false)
     val showImportDialog: StateFlow<Boolean> = _showImportDialog.asStateFlow()
 
+    private val _showExportDialog = MutableStateFlow(false)
+    val showExportDialog: StateFlow<Boolean> = _showExportDialog.asStateFlow()
+
     private val _showLogSheet = MutableStateFlow(false)
     val showLogSheet: StateFlow<Boolean> = _showLogSheet.asStateFlow()
 
@@ -54,11 +63,11 @@ class PaperViewModel(application: Application) : AndroidViewModel(application) {
 
     // Filtered and searched papers flow
     val filteredPapers: StateFlow<List<PaperRecord>> = combine(
-        repository.getAllPapers(),
+        allPapers,
         _filterStatus,
         _searchQuery
-    ) { allPapers, filter, query ->
-        allPapers.filter { paper ->
+    ) { papers, filter, query ->
+        papers.filter { paper ->
             val matchesFilter = when (filter) {
                 "DOWNLOADED" -> paper.downloadStatus == "DOWNLOADED"
                 "PAYWALLED" -> paper.downloadStatus == "PAYWALLED"
@@ -82,8 +91,16 @@ class PaperViewModel(application: Application) : AndroidViewModel(application) {
 
     fun importContent(content: String, fileName: String) {
         val lower = fileName.lowercase()
+        val firstNonBlankLine = content.removePrefix("\uFEFF")
+            .lineSequence()
+            .firstOrNull { it.isNotBlank() }
+            ?.lowercase()
+            .orEmpty()
+        val looksLikeCsvHeader = (firstNonBlankLine.contains("doi") || firstNonBlankLine.contains("title")) &&
+            (firstNonBlankLine.contains(",") || firstNonBlankLine.contains("\t") || firstNonBlankLine.contains(";"))
+
         val isRis = lower.endsWith(".ris") || content.contains("TY  -") || content.contains("ER  -")
-        val isCsv = lower.endsWith(".csv") || lower.endsWith(".tsv") || lower.endsWith(".txt")
+        val isCsv = lower.endsWith(".csv") || lower.endsWith(".tsv") || lower.endsWith(".txt") || looksLikeCsvHeader
 
         val batchId = java.util.UUID.randomUUID().toString()
         val parsedPapers = when {
@@ -119,6 +136,10 @@ class PaperViewModel(application: Application) : AndroidViewModel(application) {
         _showImportDialog.value = show
     }
 
+    fun setShowExportDialog(show: Boolean) {
+        _showExportDialog.value = show
+    }
+
     fun setShowLogSheet(show: Boolean) {
         _showLogSheet.value = show
     }
@@ -136,15 +157,31 @@ class PaperViewModel(application: Application) : AndroidViewModel(application) {
     fun clearAll() = repository.clearAllRecords()
     fun setDesignatedFolder(file: File) = repository.setDesignatedFolder(file)
 
+    fun generateRayyanCsv(
+        scope: ExportScope = ExportScope.DOWNLOADED_ONLY,
+        format: ExportFormat = ExportFormat.RAYYAN_ALL_FIELDS
+    ): String {
+        return RayyanCsvExporter.exportToCsv(
+            papers = allPapers.value,
+            scope = scope,
+            format = format
+        )
+    }
+
+    fun saveCsvToDesignatedFolder(
+        scope: ExportScope = ExportScope.DOWNLOADED_ONLY,
+        format: ExportFormat = ExportFormat.RAYYAN_ALL_FIELDS
+    ): File {
+        val csv = generateRayyanCsv(scope, format)
+        val fileName = RayyanCsvExporter.defaultFileName(scope)
+        return repository.saveCsvToDesignatedFolder(csv, fileName)
+    }
+
     fun generateManifestCsv(papers: List<PaperRecord>): String {
-        val sb = StringBuilder()
-        sb.append("DOI,Title,Authors,Journal,Year,OA_Status,Download_Status,File_Size_Bytes,Local_File_Path\n")
-        for (p in papers) {
-            val cleanTitle = "\"" + p.title.replace("\"", "\"\"") + "\""
-            val cleanAuthors = "\"" + p.authors.replace("\"", "\"\"") + "\""
-            val cleanJournal = "\"" + p.journal.replace("\"", "\"\"") + "\""
-            sb.append("${p.doi},$cleanTitle,$cleanAuthors,$cleanJournal,${p.year ?: ""},${p.oaStatus},${p.downloadStatus},${p.fileSizeBytes},\"${p.localFilePath ?: ""}\"\n")
-        }
-        return sb.toString()
+        return RayyanCsvExporter.exportToCsv(
+            papers = papers,
+            scope = ExportScope.DOWNLOADED_ONLY,
+            format = ExportFormat.RAYYAN_ALL_FIELDS
+        )
     }
 }

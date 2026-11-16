@@ -1,10 +1,12 @@
 package com.example.parser
 
 import com.example.model.PaperRecord
+import com.example.service.RayyanCsvExporter
 
 /**
  * Regex-based parser for extracting unique Digital Object Identifiers (DOIs)
- * from imported CSV, RIS, and plain text files.
+ * and full bibliographic metadata from imported CSV (including Rayyan CSVs),
+ * RIS, and plain text files.
  */
 object DoiParser {
 
@@ -117,7 +119,7 @@ object DoiParser {
 
     /**
      * Parses an RIS file into structured PaperRecord objects, extracting DOIs and bibliographic metadata
-     * (Title, Authors, Journal, Year). Ensures all unique DOIs are included without duplicates.
+     * (Title, Authors, Journal, Year, Volume, Issue, Pages, ISSN, Publisher, Abstract, URL, Notes).
      */
     fun parseRis(content: String, sourceFileName: String, batchId: String): List<PaperRecord> {
         val records = mutableListOf<PaperRecord>()
@@ -129,10 +131,24 @@ object DoiParser {
         val currentAuthors = mutableListOf<String>()
         var currentJournal = ""
         var currentYear: Int? = null
+        var currentVolume = ""
+        var currentIssue = ""
+        var startPage = ""
+        var endPage = ""
+        var currentIssn = ""
+        var currentPublisher = ""
+        var currentUrl = ""
+        var currentAbstract = ""
+        val currentNotes = mutableListOf<String>()
 
         fun commitRecord() {
             val doi = currentDoi?.let { normalizeDoi(it) }
             if (!doi.isNullOrBlank() && seenDois.add(doi)) {
+                val pages = when {
+                    startPage.isNotBlank() && endPage.isNotBlank() && startPage != endPage -> "$startPage-$endPage"
+                    startPage.isNotBlank() -> startPage
+                    else -> ""
+                }
                 records.add(
                     PaperRecord(
                         doi = doi,
@@ -140,6 +156,14 @@ object DoiParser {
                         authors = currentAuthors.joinToString("; ").trim(),
                         journal = currentJournal.trim(),
                         year = currentYear,
+                        volume = currentVolume.trim(),
+                        issue = currentIssue.trim(),
+                        pages = pages.trim(),
+                        issn = currentIssn.trim(),
+                        publisher = currentPublisher.trim(),
+                        url = currentUrl.trim(),
+                        abstractText = currentAbstract.trim(),
+                        notes = currentNotes.joinToString(" | ").trim(),
                         sourceFileName = sourceFileName,
                         batchId = batchId
                     )
@@ -150,6 +174,15 @@ object DoiParser {
             currentAuthors.clear()
             currentJournal = ""
             currentYear = null
+            currentVolume = ""
+            currentIssue = ""
+            startPage = ""
+            endPage = ""
+            currentIssn = ""
+            currentPublisher = ""
+            currentUrl = ""
+            currentAbstract = ""
+            currentNotes.clear()
         }
 
         for (line in lines) {
@@ -166,30 +199,30 @@ object DoiParser {
                         val foundDoi = normalizeDoi(value)
                         if (foundDoi != null) currentDoi = foundDoi
                     }
-                    "UR" -> {
+                    "UR", "L1", "L2" -> {
+                        if (currentUrl.isEmpty()) currentUrl = value
                         if (currentDoi == null) {
                             val foundDoi = normalizeDoi(value)
                             if (foundDoi != null) currentDoi = foundDoi
                         }
                     }
-                    "TI", "T1" -> {
-                        if (currentTitle.isEmpty()) currentTitle = value
-                    }
-                    "AU", "A1" -> {
-                        if (value.isNotEmpty()) currentAuthors.add(value)
-                    }
-                    "JO", "JF", "JA", "T2" -> {
-                        if (currentJournal.isEmpty()) currentJournal = value
-                    }
+                    "TI", "T1" -> if (currentTitle.isEmpty()) currentTitle = value
+                    "AU", "A1" -> if (value.isNotEmpty()) currentAuthors.add(value)
+                    "JO", "JF", "JA", "T2" -> if (currentJournal.isEmpty()) currentJournal = value
+                    "VL" -> if (currentVolume.isEmpty()) currentVolume = value
+                    "IS" -> if (currentIssue.isEmpty()) currentIssue = value
+                    "SP" -> if (startPage.isEmpty()) startPage = value
+                    "EP" -> if (endPage.isEmpty()) endPage = value
+                    "SN" -> if (currentIssn.isEmpty()) currentIssn = value
+                    "PB" -> if (currentPublisher.isEmpty()) currentPublisher = value
+                    "AB", "N2" -> if (currentAbstract.isEmpty()) currentAbstract = value
+                    "N1" -> if (value.isNotEmpty()) currentNotes.add(value)
                     "PY", "Y1" -> {
                         val yearMatch = Regex("""\b(19|20)\d{2}\b""").find(value)
                         yearMatch?.let { currentYear = it.value.toIntOrNull() }
                     }
-                    "ER" -> {
-                        commitRecord()
-                    }
+                    "ER" -> commitRecord()
                     else -> {
-                        // Scan other fields (e.g. notes N1, abstract AB) if DOI not yet set for this entry
                         if (currentDoi == null) {
                             val foundDoi = normalizeDoi(value)
                             if (foundDoi != null) currentDoi = foundDoi
@@ -197,7 +230,6 @@ object DoiParser {
                     }
                 }
             } else {
-                // If there's an embedded DOI on unformatted lines
                 if (currentDoi == null) {
                     val fallback = normalizeDoi(trimmed)
                     if (fallback != null) currentDoi = fallback
@@ -225,73 +257,167 @@ object DoiParser {
     }
 
     /**
-     * Parses a CSV or TSV file into PaperRecord objects, extracting DOIs and bibliographic metadata.
-     * Identifies DOI columns, scans cells with regex, and guarantees all unique DOIs are extracted.
+     * Parses a CSV or TSV file (including Rayyan CSV exports and PaperFetch CSV exports)
+     * into PaperRecord objects using a full RFC 4180 multi-line CSV parser.
      */
     fun parseCsv(content: String, sourceFileName: String, batchId: String): List<PaperRecord> {
-        val lines = content.lines().filter { it.isNotBlank() }
-        if (lines.isEmpty()) return emptyList()
+        val cleanContent = content.removePrefix("\uFEFF").trim()
+        if (cleanContent.isEmpty()) return emptyList()
 
-        // Detect delimiter (comma, semicolon, tab)
-        val firstLine = lines.first()
+        // Detect delimiter (comma, semicolon, tab) from the header line
+        val firstLine = cleanContent.lineSequence().firstOrNull { it.isNotBlank() } ?: return emptyList()
         val delimiter = when {
             firstLine.count { it == '\t' } >= 2 -> '\t'
             firstLine.count { it == ';' } > firstLine.count { it == ',' } -> ';'
             else -> ','
         }
 
-        val rows = lines.map { parseCsvLine(it, delimiter) }
-        val headerRow = rows.firstOrNull() ?: return emptyList()
+        val rows = parseCsvRows(cleanContent, delimiter)
+        if (rows.isEmpty()) return emptyList()
 
-        var doiColIndex = -1
-        var titleColIndex = -1
-        var authorColIndex = -1
-        var journalColIndex = -1
-        var yearColIndex = -1
+        val headerRow = rows.first()
+        val colMap = mutableMapOf<String, Int>()
+        var hasHeader = false
 
-        for ((index, col) in headerRow.withIndex()) {
-            val lower = col.lowercase().trim().replace("\"", "").replace("_", " ")
+        headerRow.forEachIndexed { index, rawHeader ->
+            val normalizedHeader = rawHeader.lowercase().trim()
+                .replace("\"", "")
+                .replace("_", " ")
+                .replace("-", " ")
+                .replace(Regex("\\s+"), " ")
+
             when {
-                lower == "doi" || lower.contains("doi") || lower.contains("digital object") -> {
-                    if (doiColIndex == -1) doiColIndex = index
+                normalizedHeader == "doi" || normalizedHeader == "digital object identifier" ||
+                    (normalizedHeader.contains("doi") && !colMap.containsKey("doi")) -> {
+                    colMap.putIfAbsent("doi", index)
+                    hasHeader = true
                 }
-                lower.contains("title") -> {
-                    if (titleColIndex == -1) titleColIndex = index
+                normalizedHeader == "key" || normalizedHeader == "citation key" -> {
+                    colMap.putIfAbsent("key", index)
+                    hasHeader = true
                 }
-                lower.contains("author") -> {
-                    if (authorColIndex == -1) authorColIndex = index
+                normalizedHeader == "title" || normalizedHeader == "article title" || normalizedHeader == "document title" ||
+                    (normalizedHeader.contains("title") && !colMap.containsKey("title")) -> {
+                    colMap.putIfAbsent("title", index)
+                    hasHeader = true
                 }
-                lower.contains("journal") || lower.contains("venue") || lower.contains("publisher") -> {
-                    if (journalColIndex == -1) journalColIndex = index
+                normalizedHeader == "authors" || normalizedHeader == "author" || normalizedHeader == "author list" || normalizedHeader == "creators" ||
+                    (normalizedHeader.contains("author") && !colMap.containsKey("authors")) -> {
+                    colMap.putIfAbsent("authors", index)
+                    hasHeader = true
                 }
-                lower.contains("year") || lower.contains("date") -> {
-                    if (yearColIndex == -1) yearColIndex = index
+                normalizedHeader == "journal" || normalizedHeader == "publication name" || normalizedHeader == "periodical" || normalizedHeader == "venue" || normalizedHeader == "source" ||
+                    ((normalizedHeader.contains("journal") || normalizedHeader.contains("venue")) && !colMap.containsKey("journal")) -> {
+                    colMap.putIfAbsent("journal", index)
+                    hasHeader = true
+                }
+                normalizedHeader == "year" || normalizedHeader == "publication year" || normalizedHeader == "pub year" ||
+                    (normalizedHeader == "date" && !colMap.containsKey("year")) -> {
+                    colMap.putIfAbsent("year", index)
+                    hasHeader = true
+                }
+                normalizedHeader == "volume" || normalizedHeader == "vol" -> {
+                    colMap.putIfAbsent("volume", index)
+                    hasHeader = true
+                }
+                normalizedHeader == "issue" || normalizedHeader == "number" -> {
+                    colMap.putIfAbsent("issue", index)
+                    hasHeader = true
+                }
+                normalizedHeader == "pages" || normalizedHeader == "page range" || normalizedHeader == "page" -> {
+                    colMap.putIfAbsent("pages", index)
+                    hasHeader = true
+                }
+                normalizedHeader == "issn" -> {
+                    colMap.putIfAbsent("issn", index)
+                    hasHeader = true
+                }
+                normalizedHeader == "publisher" -> {
+                    colMap.putIfAbsent("publisher", index)
+                    hasHeader = true
+                }
+                normalizedHeader == "url" || normalizedHeader == "link" || normalizedHeader == "web link" -> {
+                    colMap.putIfAbsent("url", index)
+                    hasHeader = true
+                }
+                normalizedHeader == "abstract" || normalizedHeader == "summary" || normalizedHeader == "description" -> {
+                    colMap.putIfAbsent("abstract", index)
+                    hasHeader = true
+                }
+                normalizedHeader == "notes" || normalizedHeader == "comments" -> {
+                    colMap.putIfAbsent("notes", index)
+                    hasHeader = true
+                }
+                normalizedHeader == "oa status" -> {
+                    colMap.putIfAbsent("oa_status", index)
+                    hasHeader = true
+                }
+                normalizedHeader == "is oa" -> {
+                    colMap.putIfAbsent("is_oa", index)
+                    hasHeader = true
+                }
+                normalizedHeader == "license" -> {
+                    colMap.putIfAbsent("license", index)
+                    hasHeader = true
+                }
+                normalizedHeader == "pdf url" -> {
+                    colMap.putIfAbsent("pdf_url", index)
+                    hasHeader = true
+                }
+                normalizedHeader == "download status" -> {
+                    colMap.putIfAbsent("download_status", index)
+                    hasHeader = true
+                }
+                normalizedHeader == "status message" -> {
+                    colMap.putIfAbsent("status_message", index)
+                    hasHeader = true
+                }
+                normalizedHeader == "local file path" -> {
+                    colMap.putIfAbsent("local_file_path", index)
+                    hasHeader = true
+                }
+                normalizedHeader == "file size bytes" -> {
+                    colMap.putIfAbsent("file_size_bytes", index)
+                    hasHeader = true
+                }
+                normalizedHeader == "downloaded at" -> {
+                    colMap.putIfAbsent("downloaded_at", index)
+                    hasHeader = true
+                }
+                normalizedHeader == "source file name" -> {
+                    colMap.putIfAbsent("source_file_name", index)
+                    hasHeader = true
+                }
+                normalizedHeader == "batch id" -> {
+                    colMap.putIfAbsent("batch_id", index)
+                    hasHeader = true
                 }
             }
         }
 
         val records = mutableListOf<PaperRecord>()
         val seenDois = mutableSetOf<String>()
-        val startRowIndex = if (doiColIndex != -1) 1 else 0
+        val startRowIndex = if (hasHeader) 1 else 0
+
+        fun cell(row: List<String>, colName: String): String {
+            val idx = colMap[colName] ?: return ""
+            return if (idx in row.indices) row[idx].trim() else ""
+        }
 
         for (i in startRowIndex until rows.size) {
             val row = rows[i]
-            if (row.isEmpty()) continue
+            if (row.isEmpty() || row.all { it.isBlank() }) continue
 
-            var doi: String? = null
-            var title = ""
-            var authors = ""
-            var journal = ""
-            var year: Int? = null
-
-            if (doiColIndex != -1 && doiColIndex < row.size) {
-                doi = normalizeDoi(row[doiColIndex])
-            }
-
-            // If header didn't point directly to a valid DOI, scan the row's columns
+            var doi = cell(row, "doi").takeIf { it.isNotBlank() }?.let { normalizeDoi(it) }
             if (doi == null) {
-                for (cell in row) {
-                    val found = normalizeDoi(cell)
+                doi = cell(row, "key").takeIf { it.isNotBlank() }?.let { normalizeDoi(it) }
+            }
+            if (doi == null) {
+                doi = cell(row, "url").takeIf { it.isNotBlank() }?.let { normalizeDoi(it) }
+            }
+            if (doi == null) {
+                for (c in row) {
+                    val found = normalizeDoi(c)
                     if (found != null) {
                         doi = found
                         break
@@ -300,19 +426,40 @@ object DoiParser {
             }
 
             if (doi != null && seenDois.add(doi)) {
-                if (titleColIndex != -1 && titleColIndex < row.size) {
-                    title = row[titleColIndex].trim().replace("\"", "")
+                val title = cell(row, "title")
+                val authors = cell(row, "authors")
+                val journal = cell(row, "journal")
+                val yearMatch = Regex("""\b(19|20)\d{2}\b""").find(cell(row, "year"))
+                val year = yearMatch?.value?.toIntOrNull()
+                val volume = cell(row, "volume")
+                val issue = cell(row, "issue")
+                val pages = cell(row, "pages")
+                val issn = cell(row, "issn")
+                val publisher = cell(row, "publisher")
+                val url = cell(row, "url")
+                val abstractText = cell(row, "abstract")
+                val rawNotes = cell(row, "notes")
+
+                // Unpack structured PaperFetch tags from notes if present (e.g. Rayyan Strict CSV re-import)
+                val packed = unpackNotesMetadata(rawNotes)
+
+                val oaStatus = cell(row, "oa_status").ifBlank { packed.oaStatus ?: "unknown" }
+                val isOaRaw = cell(row, "is_oa")
+                val isOa = when {
+                    isOaRaw.equals("true", ignoreCase = true) -> true
+                    isOaRaw.equals("false", ignoreCase = true) -> false
+                    packed.isOa != null -> packed.isOa
+                    else -> false
                 }
-                if (authorColIndex != -1 && authorColIndex < row.size) {
-                    authors = row[authorColIndex].trim().replace("\"", "")
-                }
-                if (journalColIndex != -1 && journalColIndex < row.size) {
-                    journal = row[journalColIndex].trim().replace("\"", "")
-                }
-                if (yearColIndex != -1 && yearColIndex < row.size) {
-                    val match = Regex("""\b(19|20)\d{2}\b""").find(row[yearColIndex])
-                    year = match?.value?.toIntOrNull()
-                }
+                val license = cell(row, "license").ifBlank { packed.license }?.takeIf { it.isNotBlank() }
+                val pdfUrl = cell(row, "pdf_url").ifBlank { packed.pdfUrl }?.takeIf { it.isNotBlank() }
+                val downloadStatus = cell(row, "download_status").ifBlank { packed.downloadStatus ?: "PENDING" }
+                val statusMessage = cell(row, "status_message").ifBlank { packed.statusMessage ?: "Queued" }
+                val localFilePath = cell(row, "local_file_path").ifBlank { packed.localFilePath }?.takeIf { it.isNotBlank() }
+                val fileSizeBytes = cell(row, "file_size_bytes").toLongOrNull() ?: packed.fileSizeBytes ?: 0L
+                val downloadedAt = RayyanCsvExporter.parseTimestamp(cell(row, "downloaded_at")) ?: packed.downloadedAt
+                val importedSourceName = cell(row, "source_file_name").ifBlank { packed.sourceFileName ?: sourceFileName }
+                val importedBatchId = cell(row, "batch_id").ifBlank { packed.batchId ?: batchId }
 
                 records.add(
                     PaperRecord(
@@ -321,24 +468,43 @@ object DoiParser {
                         authors = authors,
                         journal = journal,
                         year = year,
-                        sourceFileName = sourceFileName,
-                        batchId = batchId
+                        volume = volume,
+                        issue = issue,
+                        pages = pages,
+                        issn = issn,
+                        publisher = publisher,
+                        url = url,
+                        abstractText = abstractText,
+                        notes = packed.cleanNotes,
+                        oaStatus = oaStatus,
+                        isOa = isOa,
+                        license = license,
+                        pdfUrl = pdfUrl,
+                        downloadStatus = downloadStatus,
+                        statusMessage = statusMessage,
+                        localFilePath = localFilePath,
+                        fileSizeBytes = fileSizeBytes,
+                        downloadedAt = downloadedAt,
+                        sourceFileName = importedSourceName,
+                        batchId = importedBatchId
                     )
                 )
             }
         }
 
-        // Catch any remaining unique DOIs found anywhere in the CSV text via regex
-        val allFileDois = extractUniqueDois(content)
-        for (doi in allFileDois) {
-            if (seenDois.add(doi)) {
-                records.add(
-                    PaperRecord(
-                        doi = doi,
-                        sourceFileName = sourceFileName,
-                        batchId = batchId
+        // Only fall back to raw-text regex extraction if no structured rows were parsed
+        if (records.isEmpty()) {
+            val allFileDois = extractUniqueDois(cleanContent)
+            for (doi in allFileDois) {
+                if (seenDois.add(doi)) {
+                    records.add(
+                        PaperRecord(
+                            doi = doi,
+                            sourceFileName = sourceFileName,
+                            batchId = batchId
+                        )
                     )
-                )
+                }
             }
         }
 
@@ -359,29 +525,115 @@ object DoiParser {
         }
     }
 
+    private data class UnpackedNotes(
+        val cleanNotes: String,
+        val oaStatus: String? = null,
+        val isOa: Boolean? = null,
+        val license: String? = null,
+        val pdfUrl: String? = null,
+        val downloadStatus: String? = null,
+        val statusMessage: String? = null,
+        val localFilePath: String? = null,
+        val fileSizeBytes: Long? = null,
+        val downloadedAt: Long? = null,
+        val sourceFileName: String? = null,
+        val batchId: String? = null
+    )
+
+    private fun unpackNotesMetadata(rawNotes: String): UnpackedNotes {
+        if (rawNotes.isBlank() || !rawNotes.contains("PAPERFETCH-")) {
+            return UnpackedNotes(cleanNotes = rawNotes.trim())
+        }
+        val cleanParts = mutableListOf<String>()
+        var oaStatus: String? = null
+        var isOa: Boolean? = null
+        var license: String? = null
+        var pdfUrl: String? = null
+        var downloadStatus: String? = null
+        var statusMessage: String? = null
+        var localFilePath: String? = null
+        var fileSizeBytes: Long? = null
+        var downloadedAt: Long? = null
+        var sourceFileName: String? = null
+        var batchId: String? = null
+
+        for (part in rawNotes.split("|")) {
+            val trimmed = part.trim()
+            when {
+                trimmed.startsWith("PAPERFETCH-STATUS:") -> {
+                    downloadStatus = trimmed.removePrefix("PAPERFETCH-STATUS:").trim()
+                }
+                trimmed.startsWith("PAPERFETCH-OA:") -> {
+                    val value = trimmed.removePrefix("PAPERFETCH-OA:").trim()
+                    oaStatus = value.substringBefore(" ").trim()
+                    if (value.contains("is_oa=true")) isOa = true
+                    else if (value.contains("is_oa=false")) isOa = false
+                }
+                trimmed.startsWith("PAPERFETCH-LICENSE:") -> {
+                    license = trimmed.removePrefix("PAPERFETCH-LICENSE:").trim()
+                }
+                trimmed.startsWith("PAPERFETCH-PDF-URL:") -> {
+                    pdfUrl = trimmed.removePrefix("PAPERFETCH-PDF-URL:").trim()
+                }
+                trimmed.startsWith("PAPERFETCH-FILE:") -> {
+                    localFilePath = trimmed.removePrefix("PAPERFETCH-FILE:").trim()
+                }
+                trimmed.startsWith("PAPERFETCH-SIZE:") -> {
+                    fileSizeBytes = trimmed.removePrefix("PAPERFETCH-SIZE:").trim().toLongOrNull()
+                }
+                trimmed.startsWith("PAPERFETCH-DOWNLOADED-AT:") -> {
+                    downloadedAt = RayyanCsvExporter.parseTimestamp(
+                        trimmed.removePrefix("PAPERFETCH-DOWNLOADED-AT:").trim()
+                    )
+                }
+                trimmed.startsWith("PAPERFETCH-MESSAGE:") -> {
+                    statusMessage = trimmed.removePrefix("PAPERFETCH-MESSAGE:").trim()
+                }
+                trimmed.startsWith("PAPERFETCH-SOURCE:") -> {
+                    sourceFileName = trimmed.removePrefix("PAPERFETCH-SOURCE:").trim()
+                }
+                trimmed.startsWith("PAPERFETCH-BATCH:") -> {
+                    batchId = trimmed.removePrefix("PAPERFETCH-BATCH:").trim()
+                }
+                trimmed.isNotBlank() -> cleanParts.add(trimmed)
+            }
+        }
+
+        return UnpackedNotes(
+            cleanNotes = cleanParts.joinToString(" | "),
+            oaStatus = oaStatus,
+            isOa = isOa,
+            license = license,
+            pdfUrl = pdfUrl,
+            downloadStatus = downloadStatus,
+            statusMessage = statusMessage,
+            localFilePath = localFilePath,
+            fileSizeBytes = fileSizeBytes,
+            downloadedAt = downloadedAt,
+            sourceFileName = sourceFileName,
+            batchId = batchId
+        )
+    }
+
     /**
      * Internal helper to clean DOI suffixes, removing trailing punctuation and unbalanced parentheses.
      */
     private fun cleanDoiSuffix(rawDoi: String): String {
         var doi = rawDoi.trim()
 
-        // Replace URL-encoded slash (%2F)
         if (doi.contains("%2F", ignoreCase = true)) {
             doi = doi.replace("%2F", "/", ignoreCase = true)
         }
 
-        // Remove URL and prefix prefixes if still attached
         doi = doi.replaceFirst(
             Regex("""^(?:https?://(?:dx\.)?doi\.org/|doi:\s*)""", RegexOption.IGNORE_CASE),
             ""
         ).trim()
 
-        // Remove trailing punctuation marks: .,;:?!'\"<>[]{}
         while (doi.isNotEmpty() && (doi.last() in ".,;:?!'\"<>[]{}")) {
             doi = doi.dropLast(1)
         }
 
-        // Handle trailing parenthesis: strip if unbalanced
         while (doi.endsWith(")")) {
             val openCount = doi.count { it == '(' }
             val closeCount = doi.count { it == ')' }
@@ -395,28 +647,74 @@ object DoiParser {
             }
         }
 
+        // Strip web/file extensions appended to DOIs in publisher URLs (e.g., .../10.1186/...pdf)
+        doi = doi.replaceFirst(
+            Regex("""(?:\.pdf|\.html?|\.xml|/pdf|/full)$""", RegexOption.IGNORE_CASE),
+            ""
+        )
+
         return doi.lowercase()
     }
 
     /**
-     * Robust CSV line splitter taking quoted fields into account.
+     * RFC 4180 multi-line CSV parser handling quoted newlines, escaped quotes (""), and CRLF/LF line endings.
      */
-    private fun parseCsvLine(line: String, delimiter: Char): List<String> {
-        val result = mutableListOf<String>()
-        val sb = StringBuilder()
+    fun parseCsvRows(content: String, delimiter: Char): List<List<String>> {
+        val rows = mutableListOf<List<String>>()
+        var currentRow = mutableListOf<String>()
+        val currentCell = StringBuilder()
         var inQuotes = false
+        var i = 0
+        val len = content.length
 
-        for (char in line) {
-            if (char == '\"') {
-                inQuotes = !inQuotes
-            } else if (char == delimiter && !inQuotes) {
-                result.add(sb.toString().trim())
-                sb.clear()
+        while (i < len) {
+            val c = content[i]
+            if (inQuotes) {
+                if (c == '"') {
+                    // Check for escaped double quote ""
+                    if (i + 1 < len && content[i + 1] == '"') {
+                        currentCell.append('"')
+                        i += 2
+                        continue
+                    } else {
+                        inQuotes = false
+                    }
+                } else {
+                    currentCell.append(c)
+                }
             } else {
-                sb.append(char)
+                when (c) {
+                    '"' -> inQuotes = true
+                    delimiter -> {
+                        currentRow.add(currentCell.toString().trim())
+                        currentCell.clear()
+                    }
+                    '\r' -> {
+                        if (i + 1 < len && content[i + 1] == '\n') {
+                            i++
+                        }
+                        currentRow.add(currentCell.toString().trim())
+                        currentCell.clear()
+                        rows.add(currentRow)
+                        currentRow = mutableListOf()
+                    }
+                    '\n' -> {
+                        currentRow.add(currentCell.toString().trim())
+                        currentCell.clear()
+                        rows.add(currentRow)
+                        currentRow = mutableListOf()
+                    }
+                    else -> currentCell.append(c)
+                }
             }
+            i++
         }
-        result.add(sb.toString().trim())
-        return result
+
+        if (currentCell.isNotEmpty() || currentRow.isNotEmpty()) {
+            currentRow.add(currentCell.toString().trim())
+            rows.add(currentRow)
+        }
+
+        return rows
     }
 }

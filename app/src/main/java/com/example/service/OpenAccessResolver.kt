@@ -14,6 +14,12 @@ data class ResolvedPaperInfo(
     val authors: String,
     val journal: String,
     val year: Int?,
+    val volume: String = "",
+    val issue: String = "",
+    val pages: String = "",
+    val issn: String = "",
+    val publisher: String = "",
+    val abstractText: String = "",
     val isOa: Boolean,
     val oaStatus: String, // gold, green, bronze, hybrid, closed
     val license: String?,
@@ -37,19 +43,25 @@ class OpenAccessResolver(
         try {
             val openAlexResult = queryOpenAlex(cleanDoi)
             if (openAlexResult != null) {
+                var enriched = openAlexResult
                 // If OpenAlex returned OA but no direct PDF URL, try Europe PMC as fallback
-                if (openAlexResult.pdfUrl.isNullOrBlank()) {
+                if (enriched.pdfUrl.isNullOrBlank()) {
                     val epResult = queryEuropePmc(cleanDoi)
                     if (epResult != null && !epResult.pdfUrl.isNullOrBlank()) {
-                        return@withContext openAlexResult.copy(
+                        enriched = enriched.copy(
                             isOa = true,
-                            oaStatus = if (openAlexResult.oaStatus == "closed") "green" else openAlexResult.oaStatus,
+                            oaStatus = if (enriched.oaStatus == "closed") "green" else enriched.oaStatus,
                             pdfUrl = epResult.pdfUrl,
+                            abstractText = enriched.abstractText.ifBlank { epResult.abstractText },
+                            volume = enriched.volume.ifBlank { epResult.volume },
+                            issue = enriched.issue.ifBlank { epResult.issue },
+                            pages = enriched.pages.ifBlank { epResult.pages },
+                            issn = enriched.issn.ifBlank { epResult.issn },
                             sourceDescription = "Europe PMC (${epResult.sourceDescription})"
                         )
                     }
                 }
-                return@withContext openAlexResult
+                return@withContext enriched
             }
         } catch (_: Exception) {
             // Proceed to secondary resolvers
@@ -106,9 +118,11 @@ class OpenAccessResolver(
             val json = JSONObject(body)
 
             val title = json.optString("title", "").trim()
-            val year = if (json.has("publication_year")) json.optInt("publication_year") else null
+            val year = if (json.has("publication_year") && !json.isNull("publication_year")) {
+                json.optInt("publication_year").takeIf { it > 0 }
+            } else null
 
-            // Authors
+            // Authors (use semicolon separation for Rayyan compatibility while staying readable)
             val authorsList = mutableListOf<String>()
             val authorships = json.optJSONArray("authorships")
             if (authorships != null) {
@@ -119,21 +133,43 @@ class OpenAccessResolver(
                     if (name.isNotBlank()) authorsList.add(name)
                 }
             }
-            val authors = authorsList.take(4).joinToString(", ") + if (authorsList.size > 4) " et al." else ""
+            val authors = authorsList.joinToString("; ")
 
-            // Journal / Venue
+            // Journal / Venue, ISSN, Publisher
             var journal = ""
+            var issn = ""
+            var publisher = ""
             val primaryLoc = json.optJSONObject("primary_location")
             val sourceObj = primaryLoc?.optJSONObject("source")
             if (sourceObj != null) {
-                journal = sourceObj.optString("display_name", "")
+                journal = sourceObj.optString("display_name", "").takeIf { it != "null" } ?: ""
+                issn = sourceObj.optString("issn_l", "").takeIf { it != "null" } ?: ""
+                if (issn.isBlank()) {
+                    issn = sourceObj.optJSONArray("issn")?.optString(0, "")?.takeIf { it != "null" } ?: ""
+                }
+                publisher = sourceObj.optString("host_organization_name", "").takeIf { it != "null" } ?: ""
             }
+
+            // Biblio (volume, issue, pages)
+            val biblio = json.optJSONObject("biblio")
+            val volume = biblio?.optString("volume", "")?.takeIf { it != "null" } ?: ""
+            val issue = biblio?.optString("issue", "")?.takeIf { it != "null" } ?: ""
+            val firstPage = biblio?.optString("first_page", "")?.takeIf { it != "null" } ?: ""
+            val lastPage = biblio?.optString("last_page", "")?.takeIf { it != "null" } ?: ""
+            val pages = when {
+                firstPage.isNotBlank() && lastPage.isNotBlank() && firstPage != lastPage -> "$firstPage-$lastPage"
+                firstPage.isNotBlank() -> firstPage
+                else -> ""
+            }
+
+            // Reconstruct abstract from OpenAlex inverted index
+            val abstractText = reconstructAbstractFromInvertedIndex(json.optJSONObject("abstract_inverted_index"))
 
             // Open Access info
             val openAccessObj = json.optJSONObject("open_access")
             val isOa = openAccessObj?.optBoolean("is_oa", false) ?: false
             val oaStatus = openAccessObj?.optString("oa_status", if (isOa) "gold" else "closed") ?: "closed"
-            val oaUrl = openAccessObj?.optString("oa_url", "")?.ifEmpty { null }
+            val oaUrl = openAccessObj?.optString("oa_url", "")?.takeIf { it.isNotBlank() && it != "null" }
 
             // Best OA location
             var pdfUrl: String? = null
@@ -156,7 +192,7 @@ class OpenAccessResolver(
                     license = lic
                 }
                 val bestSource = bestOa.optJSONObject("source")?.optString("display_name", "")
-                if (!bestSource.isNullOrBlank()) {
+                if (!bestSource.isNullOrBlank() && bestSource != "null") {
                     sourceName = bestSource
                 }
             }
@@ -166,6 +202,12 @@ class OpenAccessResolver(
                 val primaryPdf = primaryLoc.optString("pdf_url", "")
                 if (primaryPdf.isNotBlank() && primaryPdf != "null") {
                     pdfUrl = primaryPdf
+                }
+                if (landingPageUrl.isNullOrBlank()) {
+                    val primaryLanding = primaryLoc.optString("landing_page_url", "")
+                    if (primaryLanding.isNotBlank() && primaryLanding != "null") {
+                        landingPageUrl = primaryLanding
+                    }
                 }
             }
 
@@ -181,6 +223,12 @@ class OpenAccessResolver(
                 authors = authors,
                 journal = journal,
                 year = year,
+                volume = volume,
+                issue = issue,
+                pages = pages,
+                issn = issn,
+                publisher = publisher,
+                abstractText = abstractText,
                 isOa = isOa || !pdfUrl.isNullOrBlank(),
                 oaStatus = oaStatus,
                 license = license,
@@ -208,10 +256,19 @@ class OpenAccessResolver(
             if (resultList == null || resultList.length() == 0) return null
 
             val item = resultList.getJSONObject(0)
-            val title = item.optString("title", "").trim()
+            val title = stripHtmlTags(item.optString("title", "").trim())
             val authorString = item.optString("authorString", "")
-            val journalTitle = item.optJSONObject("journalInfo")?.optJSONObject("journal")?.optString("title", "") ?: ""
+            val journalObj = item.optJSONObject("journalInfo")?.optJSONObject("journal")
+            val journalTitle = journalObj?.optString("title", "") ?: ""
+            val issn = journalObj?.optString("issn", "")?.ifBlank {
+                journalObj.optString("essn", "")
+            } ?: ""
             val year = item.optInt("pubYear", 0).takeIf { it > 0 }
+            val volume = item.optString("journalVolume", "").takeIf { it != "null" } ?: ""
+            val issue = item.optString("issue", "").takeIf { it != "null" } ?: ""
+            val pages = item.optString("pageInfo", "").takeIf { it != "null" } ?: ""
+            val abstractText = stripHtmlTags(item.optString("abstractText", "").takeIf { it != "null" } ?: "")
+
             val hasPdf = item.optString("hasPDF", "N") == "Y"
             val pmcid = item.optString("pmcid", "")
 
@@ -228,9 +285,15 @@ class OpenAccessResolver(
                 authors = authorString,
                 journal = journalTitle,
                 year = year,
+                volume = volume,
+                issue = issue,
+                pages = pages,
+                issn = issn,
+                publisher = "",
+                abstractText = abstractText,
                 isOa = isOa,
                 oaStatus = if (isOa) "green" else "closed",
-                license = item.optString("license", null),
+                license = item.optString("license", "").ifEmpty { null },
                 pdfUrl = pdfUrl,
                 landingPageUrl = "https://europepmc.org/article/MED/${item.optString("id", "")}",
                 sourceDescription = "Europe PMC"
@@ -252,9 +315,15 @@ class OpenAccessResolver(
             val json = JSONObject(body).optJSONObject("message") ?: return null
 
             val titleArray = json.optJSONArray("title")
-            val title = titleArray?.optString(0, "") ?: ""
+            val title = stripHtmlTags(titleArray?.optString(0, "") ?: "")
             val containerArray = json.optJSONArray("container-title")
             val journal = containerArray?.optString(0, "") ?: ""
+            val volume = json.optString("volume", "").takeIf { it != "null" } ?: ""
+            val issue = json.optString("issue", "").takeIf { it != "null" } ?: ""
+            val pages = json.optString("page", "").takeIf { it != "null" } ?: ""
+            val issn = json.optJSONArray("ISSN")?.optString(0, "") ?: ""
+            val publisher = json.optString("publisher", "").takeIf { it != "null" } ?: ""
+            val abstractText = stripHtmlTags(json.optString("abstract", "").takeIf { it != "null" } ?: "")
 
             // Year
             var year: Int? = null
@@ -272,11 +341,15 @@ class OpenAccessResolver(
                     val a = authorArr.optJSONObject(i)
                     val given = a?.optString("given", "") ?: ""
                     val family = a?.optString("family", "") ?: ""
-                    val fullName = "$given $family".trim()
+                    val fullName = if (family.isNotBlank() && given.isNotBlank()) {
+                        "$family, $given"
+                    } else {
+                        "$given $family".trim()
+                    }
                     if (fullName.isNotBlank()) authorsList.add(fullName)
                 }
             }
-            val authors = authorsList.take(4).joinToString(", ")
+            val authors = authorsList.joinToString("; ")
 
             var pdfUrl: String? = null
             val linkArr = json.optJSONArray("link")
@@ -298,6 +371,12 @@ class OpenAccessResolver(
                 authors = authors,
                 journal = journal,
                 year = year,
+                volume = volume,
+                issue = issue,
+                pages = pages,
+                issn = issn,
+                publisher = publisher,
+                abstractText = abstractText,
                 isOa = !pdfUrl.isNullOrBlank(),
                 oaStatus = if (!pdfUrl.isNullOrBlank()) "hybrid" else "closed",
                 license = null,
@@ -306,5 +385,30 @@ class OpenAccessResolver(
                 sourceDescription = "Crossref"
             )
         }
+    }
+
+    private fun reconstructAbstractFromInvertedIndex(invertedIndex: JSONObject?): String {
+        if (invertedIndex == null) return ""
+        return try {
+            val wordsWithPos = mutableListOf<Pair<Int, String>>()
+            val keys = invertedIndex.keys()
+            while (keys.hasNext()) {
+                val word = keys.next()
+                val positions = invertedIndex.optJSONArray(word) ?: continue
+                for (i in 0 until positions.length()) {
+                    wordsWithPos.add(positions.getInt(i) to word)
+                }
+            }
+            wordsWithPos.sortedBy { it.first }.joinToString(" ") { it.second }.trim()
+        } catch (_: Exception) {
+            ""
+        }
+    }
+
+    private fun stripHtmlTags(raw: String): String {
+        if (raw.isBlank()) return ""
+        return raw.replace(Regex("<[^>]+>"), " ")
+            .replace(Regex("\\s+"), " ")
+            .trim()
     }
 }

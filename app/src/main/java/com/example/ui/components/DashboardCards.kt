@@ -22,8 +22,10 @@ import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.PieChart
+import androidx.compose.material.icons.filled.TableChart
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -52,6 +54,7 @@ fun DashboardCards(
     stats: DashboardStats,
     activeFilter: String,
     onFilterSelected: (String) -> Unit,
+    onExportClick: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val downloadedMb = String.format("%.1f", stats.totalDownloadedBytes / (1024.0 * 1024.0))
@@ -157,6 +160,34 @@ fun DashboardCards(
                     .weight(1f)
                     .testTag("filter_active_card")
             )
+        }
+
+        if (stats.totalScanned > 0) {
+            Spacer(modifier = Modifier.height(10.dp))
+            FilledTonalButton(
+                onClick = onExportClick,
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(48.dp)
+                    .testTag("dashboard_export_csv_button")
+            ) {
+                Icon(
+                    imageVector = Icons.Default.TableChart,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = if (stats.downloadedCount > 0) {
+                        "Export Rayyan CSV (${stats.downloadedCount} Downloaded)"
+                    } else {
+                        "Export Rayyan CSV (${stats.totalScanned} Scanned)"
+                    },
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 13.sp
+                )
+            }
         }
     }
 }
